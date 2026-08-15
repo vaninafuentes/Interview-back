@@ -37,10 +37,7 @@ out/
 .vscode/
 
 ### Gradle & Build ###
-gradle/wrapper/gradlew
-gradlew.bat
-build.gradle
-settings.gradle
+# Solo ignorar archivos generados, no los de configuración del proyecto
 
 ### IDE ###
 .gitattributes
