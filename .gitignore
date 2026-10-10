@@ -41,3 +41,6 @@ out/
 
 ### IDE ###
 .gitattributes
+
+### Secretos — NUNCA commitear archivos con API keys ###
+src/main/resources/application.properties
