@@ -29,7 +29,7 @@ version = "0.0.1-SNAPSHOT"
 
 java {
     toolchain {
-        // Mantenemos Java 26 como pide el profe
+        // Toolchain de Java 26
         languageVersion = JavaLanguageVersion.of(26)
     }
 }
