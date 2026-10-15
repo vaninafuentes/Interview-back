@@ -1,7 +1,9 @@
 package com.example.interviewback.controller;
 
+import com.example.interviewback.dto.CreateQuestionRequest;
 import com.example.interviewback.model.Question;
 import com.example.interviewback.service.QuestionService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,7 +60,7 @@ public class QuestionController {
     /**
      * GET /api/questions/{id}
      * Retorna una pregunta específica por su ID.
-     * Código HTTP: 200 OK (o 500 si no se encuentra — ver mejora futura con @ExceptionHandler)
+     * Código HTTP: 200 OK, o 404 Not Found si no existe (lo mapea GlobalExceptionHandler)
      *
      * @param id el ID de la pregunta (extraído de la URL)
      */
@@ -70,14 +72,20 @@ public class QuestionController {
     /**
      * POST /api/questions
      * Crea una nueva pregunta.
-     * Código HTTP: 201 Created
+     * Código HTTP: 201 Created, o 400 si el body no pasa la validación.
      *
-     * @param question el body JSON se deserializa automáticamente a la entidad Question
+     * IMPORTANTE: recibe un DTO y no la entidad Question directamente.
+     * Si recibiera la entidad, un cliente podría mandar un `id` en el body y JPA
+     * haría merge, sobrescribiendo una pregunta existente (mass assignment).
+     * Con el DTO, el `id` lo asigna siempre la base de datos.
+     *
+     * @param request datos de la pregunta a crear (texto, categoría, dificultad)
      * @return la pregunta creada con su ID asignado
      */
     @PostMapping
-    public ResponseEntity<Question> createQuestion(@RequestBody Question question) {
-        Question created = questionService.createQuestion(question);
+    public ResponseEntity<Question> createQuestion(@Valid @RequestBody CreateQuestionRequest request) {
+        Question created = questionService.createQuestion(
+                new Question(request.getText(), request.getCategory(), request.getDifficulty()));
         // Retornamos 201 CREATED en vez del 200 por defecto,
         // siguiendo las convenciones REST para creación de recursos.
         return ResponseEntity.status(HttpStatus.CREATED).body(created);

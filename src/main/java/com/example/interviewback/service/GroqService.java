@@ -1,5 +1,6 @@
 package com.example.interviewback.service;
 
+import com.example.interviewback.dto.CvAnalysisResponse;
 import com.example.interviewback.dto.InterviewCriteria;
 import com.example.interviewback.dto.InterviewFeedbackResponse;
 import com.example.interviewback.dto.GeneratedQuestionDto;
@@ -31,7 +32,7 @@ import java.util.Map;
  * Groq es una plataforma de inferencia rápida compatible con la API de OpenAI.
  *
  * Endpoint: https://api.groq.com/openai/v1/chat/completions
- * Modelo:   openai/gpt-oss-20b
+ * Modelo:   configurable en application.properties (propiedad groq.model)
  *
  * La API key se obtiene de la variable de entorno GROQ_API_KEY,
  * declarada en application.properties como:
@@ -51,13 +52,31 @@ public class GroqService {
     private static final Logger log = LoggerFactory.getLogger(GroqService.class);
 
     private static final String GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-    private static final String GROQ_MODEL   = "qwen/qwen3.8-27b";
+
+    /**
+     * Modelo de Groq a usar en todas las llamadas.
+     *
+     * Se lee de application.properties para poder cambiarlo SIN recompilar:
+     * Groq retira modelos de su tier Preview cada tanto, y si estuviera
+     * hardcodeado habría que rebuildear el backend para reaccionar.
+     */
+    @Value("${groq.model:qwen/qwen3.8-27b}")
+    private String model;
 
     // Máximo de tokens para evaluación de respuesta
     private static final int MAX_OUTPUT_TOKENS = 700;
 
-    // Máximo de tokens para generación de preguntas (más generoso: N preguntas * ~80 tokens)
-    private static final int MAX_GENERATION_TOKENS = 900;
+    // Máximo de tokens para generación de preguntas.
+    // El máximo permitido es 15 preguntas * ~80 tokens ≈ 1200, más el overhead del JSON.
+    // Con 900 el JSON se truncaba con count alto, el parseo fallaba y el usuario
+    // recibía un 502 en lugar de sus preguntas.
+    private static final int MAX_GENERATION_TOKENS = 2000;
+
+    // Máximo de tokens para el análisis de CV (el JSON de respuesta es chico)
+    private static final int MAX_CV_ANALYSIS_TOKENS = 600;
+
+    // Máximo de caracteres del CV que se envían a la IA (evita prompts gigantes y exceder tokens)
+    private static final int MAX_CV_TEXT_LENGTH = 8000;
 
     // Segundos de espera antes del único reintento por 429
     private static final int RETRY_WAIT_SECONDS = 3;
@@ -92,7 +111,7 @@ public class GroqService {
         String prompt = buildGenerationPrompt(topic, difficulty, count);
 
         Map<String, Object> requestBody = Map.of(
-                "model",      GROQ_MODEL,
+                "model",      model,
                 "messages",   List.of(
                         Map.of("role", "user", "content", prompt)
                 ),
@@ -229,7 +248,7 @@ public class GroqService {
         }
 
         log.info("[GroqService] Evaluando respuesta | modelo={} | categoria={} | dificultad={}",
-                GROQ_MODEL, category, difficulty);
+                model, category, difficulty);
 
         // Primer intento
         try {
@@ -241,7 +260,7 @@ public class GroqService {
 
         // Único reintento
         try {
-            log.info("[GroqService] Reintento de llamada a Groq | modelo={}", GROQ_MODEL);
+            log.info("[GroqService] Reintento de llamada a Groq | modelo={}", model);
             return callGroqApi(questionText, category, difficulty, userAnswer);
         } catch (RateLimitException e) {
             log.error("[GroqService] 429 también en el reintento. Abortando.");
@@ -263,7 +282,7 @@ public class GroqService {
         String userMessage  = buildUserMessage(questionText, category, difficulty, userAnswer);
 
         Map<String, Object> requestBody = Map.of(
-                "model",      GROQ_MODEL,
+                "model",      model,
                 "messages",   List.of(
                         Map.of("role", "system", "content", systemPrompt),
                         Map.of("role", "user",   "content", userMessage)
@@ -487,7 +506,7 @@ public class GroqService {
         );
 
         Map<String, Object> requestBody = Map.of(
-                "model", GROQ_MODEL,
+                "model", model,
                 "messages", List.of(Map.of("role", "user", "content", prompt)),
                 "temperature", 0.7,
                 "max_tokens", 150,
@@ -514,12 +533,251 @@ public class GroqService {
     }
 
     // -------------------------------------------------------------------------
+    // Análisis de CV (rol, seniority, skills y resumen)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Analiza el texto extraído de un CV y devuelve rol, seniority, skills y un resumen.
+     *
+     * A diferencia de otros métodos, acá NO se devuelven datos de fallback:
+     * inventar un rol o unas skills sería mostrarle al usuario información falsa.
+     * Si la IA no está disponible, se lanza una excepción (429 o 502).
+     *
+     * @param cvText texto plano extraído del PDF del CV
+     * @return análisis estructurado generado por la IA
+     */
+    public CvAnalysisResponse analyzeCv(String cvText) {
+        if ("NOT_CONFIGURED".equals(apiKey) || apiKey == null || apiKey.isBlank()) {
+            log.error("[GroqService] GROQ_API_KEY no configurada. No se puede analizar el CV.");
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "El servicio de IA no está configurado. Configurá GROQ_API_KEY antes de iniciar el backend.");
+        }
+
+        // Truncamos el CV para no exceder el límite de tokens del modelo
+        String truncatedText = truncateCvText(cvText);
+
+        log.info("[GroqService] Analizando CV | chars={} | modelo={}", truncatedText.length(), model);
+
+        // Primer intento
+        try {
+            return callGroqApiForCvAnalysis(truncatedText);
+        } catch (RateLimitException e) {
+            log.warn("[GroqService] 429 recibido al analizar el CV. Reintentando en {}s...", RETRY_WAIT_SECONDS);
+            waitSeconds(RETRY_WAIT_SECONDS);
+        }
+
+        // Único reintento
+        try {
+            log.info("[GroqService] Reintento de análisis de CV | modelo={}", model);
+            return callGroqApiForCvAnalysis(truncatedText);
+        } catch (RateLimitException e) {
+            log.error("[GroqService] 429 también en el reintento del análisis de CV. Abortando.");
+            throw new ResponseStatusException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "La IA está temporalmente limitada por cantidad de solicitudes. " +
+                    "Esperá unos segundos e intentá nuevamente."
+            );
+        }
+    }
+
+    /**
+     * Recorta el texto del CV al máximo permitido antes de enviarlo a la IA.
+     */
+    private String truncateCvText(String cvText) {
+        if (cvText == null) return "";
+        String trimmed = cvText.trim();
+        if (trimmed.length() > MAX_CV_TEXT_LENGTH) {
+            log.info("[GroqService] CV truncado de {} a {} caracteres",
+                    trimmed.length(), MAX_CV_TEXT_LENGTH);
+            return trimmed.substring(0, MAX_CV_TEXT_LENGTH);
+        }
+        return trimmed;
+    }
+
+    /**
+     * Llamada HTTP a la API de Groq para analizar el CV.
+     * Mismo manejo de errores que el resto del servicio:
+     *   401/403 → error de configuración (clave inválida / sin acceso al modelo)
+     *   429     → RateLimitException (dispara el reintento del llamador)
+     *   resto   → 502 (fallo del servicio de IA)
+     */
+    private CvAnalysisResponse callGroqApiForCvAnalysis(String cvText) {
+        Map<String, Object> requestBody = Map.of(
+                "model",      model,
+                "messages",   List.of(
+                        Map.of("role", "user", "content", buildCvAnalysisPrompt(cvText))
+                ),
+                "temperature",     0.3,
+                "max_tokens",      MAX_CV_ANALYSIS_TOKENS,
+                "response_format", Map.of("type", "json_object")
+        );
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(apiKey);
+
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+
+        try {
+            ResponseEntity<String> response = restTemplate.postForEntity(GROQ_API_URL, request, String.class);
+            log.info("[GroqService] Respuesta de análisis de CV recibida | status={}", response.getStatusCode());
+            return parseCvAnalysisResponse(response.getBody());
+
+        } catch (HttpStatusCodeException e) {
+            int statusCode = e.getStatusCode().value();
+            // Logueamos el cuerpo del error de Groq (sin API key)
+            log.error("[GroqService] Error HTTP {} al analizar el CV | body={}",
+                    statusCode, e.getResponseBodyAsString());
+
+            switch (statusCode) {
+                case 401 -> throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        "La clave de API de Groq no es válida. Contactá al administrador."
+                );
+                case 403 -> throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        "Sin acceso al modelo de IA. Contactá al administrador."
+                );
+                case 429 -> throw new RateLimitException("Rate limit alcanzado");
+                default -> throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Error en el servicio de IA (" + statusCode + "). Intentá nuevamente más tarde."
+                );
+            }
+
+        } catch (RateLimitException e) {
+            throw e; // re-lanzar para el retry
+        } catch (ResponseStatusException e) {
+            throw e; // error ya tipificado (ej: respuesta de la IA ininterpretable)
+        } catch (Exception e) {
+            log.error("[GroqService] Error inesperado al analizar el CV: {}", e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Error procesando la respuesta de la IA al analizar el CV."
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Prompt de análisis de CV
+    // -------------------------------------------------------------------------
+
+    /**
+     * Prompt en español que pide a la IA extraer rol, seniority, skills y resumen del CV.
+     * Se concatena el texto del CV (no se usa String.format porque el CV puede
+     * contener caracteres '%' que romperían el formateo).
+     */
+    private String buildCvAnalysisPrompt(String cvText) {
+        return """
+                Analizá el texto extraído de un CV y extraé la información profesional del candidato.
+
+                Reglas:
+                - "role": el puesto o perfil profesional principal del candidato (ej: "Desarrollador Backend"). Si no se puede determinar, usá "No especificado".
+                - "seniority": el nivel de experiencia inferido de los años trabajados y las responsabilidades ("Junior", "Semi Senior" o "Senior"). Si no se puede determinar, usá "No especificado".
+                - "skills": hasta 15 habilidades técnicas concretas mencionadas en el CV (lenguajes, frameworks, herramientas, bases de datos).
+                - "summary": resumen profesional breve de 2-3 oraciones en español, basado SOLO en la información del CV.
+                - No inventés datos que no aparezcan en el texto. Si el texto es ambiguo, usá "No especificado".
+
+                Respondé ÚNICAMENTE con un objeto JSON válido, sin Markdown, sin texto extra:
+                {
+                  "role": "<puesto principal>",
+                  "seniority": "<Junior|Semi Senior|Senior|No especificado>",
+                  "skills": ["<skill>"],
+                  "summary": "<resumen breve>"
+                }
+
+                Texto del CV:
+                """ + cvText;
+    }
+
+    // -------------------------------------------------------------------------
+    // Parseo de la respuesta del análisis de CV
+    // -------------------------------------------------------------------------
+
+    private CvAnalysisResponse parseCvAnalysisResponse(String responseBody) {
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+
+            JsonNode choicesNode = root.path("choices");
+            if (choicesNode.isMissingNode() || !choicesNode.isArray() || choicesNode.isEmpty()) {
+                log.error("[GroqService] Respuesta del análisis de CV no contiene 'choices'. Body recortado: {}",
+                        responseBody.substring(0, Math.min(200, responseBody.length())));
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                        "Respuesta inesperada del servicio de IA.");
+            }
+
+            String content = choicesNode.get(0)
+                    .path("message")
+                    .path("content")
+                    .asText("");
+
+            // Limpiar posibles delimitadores Markdown ```json ... ```
+            content = stripMarkdownCodeBlock(content).trim();
+
+            if (content.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                        "El servicio de IA devolvió una respuesta vacía.");
+            }
+
+            JsonNode cvJson = objectMapper.readTree(content);
+
+            // Parseo defensivo: si falta un campo, usamos un valor por defecto legible
+            String role      = cvJson.path("role").asText("No especificado");
+            String seniority = cvJson.path("seniority").asText("No especificado");
+            String summary   = cvJson.path("summary").asText("Sin resumen disponible.");
+
+            if (role == null || role.isBlank())         role = "No especificado";
+            if (seniority == null || seniority.isBlank()) seniority = "No especificado";
+            if (summary == null || summary.isBlank())   summary = "Sin resumen disponible.";
+
+            List<String> skills = parseSkills(cvJson.path("skills"));
+            skills.replaceAll(String::trim);
+            skills.removeIf(String::isBlank);
+
+            log.info("[GroqService] Análisis de CV parseado | role={} | skills={}", role, skills.size());
+
+            return new CvAnalysisResponse(role, seniority, skills, summary);
+
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[GroqService] Error al parsear el análisis de CV: {}", e.getMessage(), e);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "No se pudo interpretar la respuesta del servicio de IA.");
+        }
+    }
+
+    /**
+     * Extrae la lista de skills tolerando los dos formatos que puede devolver la IA:
+     *   - array de strings: ["Java", "Spring Boot", "MySQL"]
+     *   - string separado por comas: "Java, Spring Boot, MySQL"
+     */
+    private List<String> parseSkills(JsonNode node) {
+        if (node != null && node.isTextual()) {
+            List<String> fromText = new ArrayList<>();
+            for (String skill : node.asText("").split(",")) {
+                fromText.add(skill);
+            }
+            return fromText;
+        }
+        return parseStringArray(node);
+    }
+
+    // -------------------------------------------------------------------------
     // Feedback de fallback (sin API key)
     // -------------------------------------------------------------------------
 
+    /**
+     * Feedback que se devuelve cuando la IA no está disponible (falta GROQ_API_KEY).
+     *
+     * Devuelve un score FIJO de 5. Por eso la respuesta se marca con
+     * `aiGenerated = false`: InterviewService usa esa bandera para NO persistir la
+     * sesión, porque guardar un 5 inventado contaminaría el promedio, el mejor
+     * score, los promedios por categoría y la racha del usuario.
+     */
     private InterviewFeedbackResponse buildFallbackFeedback() {
         InterviewCriteria criteria = new InterviewCriteria(5, 5, 5, 5, 5);
-        return new InterviewFeedbackResponse(
+        InterviewFeedbackResponse response = new InterviewFeedbackResponse(
                 5,
                 criteria,
                 Collections.singletonList("Tu respuesta fue recibida correctamente."),
@@ -531,6 +789,8 @@ public class GroqService {
                 "La evaluación automática no está disponible. Verificá que GROQ_API_KEY " +
                 "esté definida como variable de entorno antes de iniciar el servidor."
         );
+        response.setAiGenerated(false);
+        return response;
     }
 
     // -------------------------------------------------------------------------

@@ -16,14 +16,14 @@ import java.time.LocalDateTime;
  * -----------
  * Guarda el registro de cada vez que un usuario responde a una pregunta
  * durante una sesión de entrevista simulada. Incluye la respuesta del usuario
- * y el feedback generado por la IA (Grok).
+ * y el feedback generado por la IA (Groq).
  *
  * Campos:
  *   - id:          identificador único, auto-generado
  *   - userId:      ID del usuario que practicó
  *   - questionId:  ID de la pregunta respondida
  *   - userAnswer:  respuesta escrita por el usuario (puede ser transcripción de audio)
- *   - aiFeedback:  feedback generado por Grok en texto libre
+ *   - aiFeedback:  feedback generado por Groq en texto libre
  *   - score:       puntuación de 0 a 10 asignada por la IA
  *   - tips:        consejos separados por "|" para mejorar la respuesta
  *   - answeredAt:  timestamp de cuándo se respondió
@@ -47,7 +47,7 @@ public class InterviewSession {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String userAnswer;
 
-    // Feedback generado por Grok
+    // Feedback generado por Groq
     @Column(columnDefinition = "TEXT")
     private String aiFeedback;
 

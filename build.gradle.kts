@@ -68,6 +68,14 @@ dependencies {
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 
+    // --- Procesamiento de PDF ---
+    // Apache PDFBox 3.x: extrae el texto de los CVs en PDF (POST /api/cv/analyze).
+    // Se excluye commons-logging porque Spring ya aporta spring-jcl, que implementa
+    // las mismas clases (org.apache.commons.logging) y las redirige a SLF4J.
+    implementation("org.apache.pdfbox:pdfbox:3.0.3") {
+        exclude(group = "commons-logging", module = "commons-logging")
+    }
+
     // --- Testing ---
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

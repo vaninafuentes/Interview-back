@@ -82,6 +82,15 @@ public class InterviewService {
         InterviewFeedbackResponse feedback = groqService.evaluateAnswer(
                 questionText, category, difficulty, request.getUserAnswer());
 
+        // Si el feedback vino del fallback local (falta GROQ_API_KEY), NO se persiste.
+        // El fallback devuelve un score fijo de 5 que no evalúa nada: guardarlo
+        // falsearía el promedio, el mejor score, los promedios por categoría y la racha.
+        if (!feedback.isAiGenerated()) {
+            log.warn("[InterviewService] Feedback de fallback (IA no disponible). "
+                    + "No se persiste la sesión | userId={}", userId);
+            return feedback;
+        }
+
         // Persistir la sesión con metadata completa
         try {
             String recommendationsStr = feedback.getRecommendations() != null

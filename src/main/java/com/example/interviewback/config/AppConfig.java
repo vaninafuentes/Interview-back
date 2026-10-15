@@ -13,7 +13,7 @@ import org.springframework.web.client.RestTemplate;
  *
  * RestTemplate:
  *   Cliente HTTP síncrono de Spring para hacer llamadas a APIs externas.
- *   Lo usamos en GrokService para llamar a la API de xAI (Grok).
+ *   Lo usamos en GroqService para llamar a la API de Groq (groq.com).
  *   Al definirlo como @Bean, Spring lo gestiona como singleton y podemos
  *   inyectarlo por constructor en cualquier servicio.
  */
@@ -21,7 +21,7 @@ import org.springframework.web.client.RestTemplate;
 public class AppConfig {
 
     /**
-     * Bean de RestTemplate para llamadas HTTP a APIs externas (Grok AI).
+     * Bean de RestTemplate para llamadas HTTP a APIs externas (Groq AI).
      * Singleton: una sola instancia compartida por toda la aplicación.
      */
     @Bean

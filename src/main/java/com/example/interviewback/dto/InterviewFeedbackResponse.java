@@ -43,6 +43,17 @@ public class InterviewFeedbackResponse {
     private String feedback;
     private String modelAnswer;
 
+    /**
+     * false cuando la evaluación NO la generó la IA sino el fallback local
+     * (por ejemplo, si falta la variable de entorno GROQ_API_KEY).
+     *
+     * El fallback devuelve un score fijo de 5. Persistir eso como si fuera una
+     * evaluación real falsearía el promedio, el mejor score, los promedios por
+     * categoría y la racha del usuario — por eso InterviewService consulta esta
+     * bandera para decidir si guarda la sesión o no.
+     */
+    private boolean aiGenerated = true;
+
     public InterviewFeedbackResponse() {}
 
     public InterviewFeedbackResponse(int score, InterviewCriteria criteria,
@@ -84,4 +95,7 @@ public class InterviewFeedbackResponse {
 
     public String getModelAnswer() { return modelAnswer; }
     public void setModelAnswer(String modelAnswer) { this.modelAnswer = modelAnswer; }
+
+    public boolean isAiGenerated() { return aiGenerated; }
+    public void setAiGenerated(boolean aiGenerated) { this.aiGenerated = aiGenerated; }
 }
